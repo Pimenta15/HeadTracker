@@ -69,7 +69,7 @@ class FaceDetector:
         self.center_cache = {}
         self.nms_threshold = 0.4
         self.session = onnxruntime.InferenceSession(
-            model_file, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            model_file, providers=['DmlExecutionProvider', 'CPUExecutionProvider'])
 
         # Get model configurations from the model file.
         # What is the input like?

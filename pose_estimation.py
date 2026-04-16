@@ -27,10 +27,10 @@ class PoseEstimator:
         # Assuming no lens distortion
         self.dist_coeefs = np.zeros((4, 1))
 
-        # Rotation vector and translation vector
-        self.r_vec = np.array([[0.01891013], [0.08560084], [-3.14392813]])
-        self.t_vec = np.array(
-            [[-14.97821226], [-10.62040383], [-2053.03596872]])
+        # Rotation vector and translation vector (não usados como guess, apenas mantidos
+        # para compatibilidade com visualize/draw_axes)
+        self.r_vec = None
+        self.t_vec = None
 
     def _get_full_model_points(self, filename='assets/model.txt'):
         """Get all 68 3D model points from file"""
@@ -47,29 +47,21 @@ class PoseEstimator:
         return model_points
 
     def solve(self, points):
-            """Solve pose with all the 68 image points"""
-            # Se for o primeiro frame, faz um cálculo do zero
-            if self.r_vec is None:
-                (_, rotation_vector, translation_vector) = cv2.solvePnP(
-                    self.model_points_68, points, self.camera_matrix, self.dist_coeefs)
-                self.r_vec = rotation_vector
-                self.t_vec = translation_vector
+        """Solve pose com todos os 68 landmarks.
+        Usa EPNP (não-iterativo) para evitar acúmulo de erro entre frames.
+        A suavização temporal fica no One Euro Filter dos ângulos em main.py.
+        """
+        (_, rotation_vector, translation_vector) = cv2.solvePnP(
+            self.model_points_68,
+            points,
+            self.camera_matrix,
+            self.dist_coeefs,
+            flags=cv2.SOLVEPNP_EPNP)
 
-            # RASTREAMENTO TEMPORAL: Usa a pose anterior (r_vec e t_vec) como base inicial
-            (_, rotation_vector, translation_vector) = cv2.solvePnP(
-                self.model_points_68,
-                points,
-                self.camera_matrix,
-                self.dist_coeefs,
-                rvec=self.r_vec,
-                tvec=self.t_vec,
-                useExtrinsicGuess=True)
+        self.r_vec = rotation_vector
+        self.t_vec = translation_vector
 
-            # CORREÇÃO CRÍTICA: Atualiza o estado da classe para o próximo frame
-            self.r_vec = rotation_vector
-            self.t_vec = translation_vector
-
-            return (rotation_vector, translation_vector)
+        return (rotation_vector, translation_vector)
 
     def visualize(self, image, pose, color=(255, 255, 255), line_width=2):
         """Draw a 3D box as annotation of pose"""

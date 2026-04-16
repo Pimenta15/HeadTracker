@@ -18,7 +18,7 @@ class MarkDetector:
         assert os.path.exists(model_file), f"File not found: {model_file}"
         self._input_size = 128
         self.model = ort.InferenceSession(
-            model_file, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+            model_file, providers=["DmlExecutionProvider", "CPUExecutionProvider"])
 
     def _preprocess(self, bgrs):
         """Preprocess the inputs to meet the model's needs.
