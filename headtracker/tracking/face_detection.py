@@ -1,4 +1,4 @@
-"""This module provides a face detection implementation backed by SCRFD.
+"""Face detection backed by SCRFD.
 https://github.com/deepinsight/insightface/tree/master/detection/scrfd
 """
 import os
@@ -9,17 +9,6 @@ import onnxruntime
 
 
 def distance2bbox(points, distance, max_shape=None):
-    """Decode distance prediction to bounding box.
-
-    Args:
-        points (Tensor): Shape (n, 2), [x, y].
-        distance (Tensor): Distance from the given point to 4
-            boundaries (left, top, right, bottom).
-        max_shape (tuple): Shape of the image.
-
-    Returns:
-        Tensor: Decoded bboxes.
-    """
     x1 = points[:, 0] - distance[:, 0]
     y1 = points[:, 1] - distance[:, 1]
     x2 = points[:, 0] + distance[:, 2]
@@ -33,17 +22,6 @@ def distance2bbox(points, distance, max_shape=None):
 
 
 def distance2kps(points, distance, max_shape=None):
-    """Decode distance prediction to bounding box.
-
-    Args:
-        points (Tensor): Shape (n, 2), [x, y].
-        distance (Tensor): Distance from the given point to 4
-            boundaries (left, top, right, bottom).
-        max_shape (tuple): Shape of the image.
-
-    Returns:
-        Tensor: Decoded bboxes.
-    """
     preds = []
     for i in range(0, distance.shape[1], 2):
         px = points[:, i % 2] + distance[:, i]
@@ -59,11 +37,6 @@ def distance2kps(points, distance, max_shape=None):
 class FaceDetector:
 
     def __init__(self, model_file):
-        """Initialize a face detector.
-
-        Args:
-            model_file (str): ONNX model file path.
-        """
         assert os.path.exists(model_file), f"File not found: {model_file}"
 
         self.center_cache = {}
@@ -71,22 +44,16 @@ class FaceDetector:
         self.session = onnxruntime.InferenceSession(
             model_file, providers=['DmlExecutionProvider', 'CPUExecutionProvider'])
 
-        # Get model configurations from the model file.
-        # What is the input like?
         input_cfg = self.session.get_inputs()[0]
         input_name = input_cfg.name
         input_shape = input_cfg.shape
         self.input_size = tuple(input_shape[2:4][::-1])
 
-        # How about the outputs?
         outputs = self.session.get_outputs()
-        output_names = []
-        for o in outputs:
-            output_names.append(o.name)
+        output_names = [o.name for o in outputs]
         self.input_name = input_name
         self.output_names = output_names
 
-        # And any key points?
         self._with_kps = False
         self._anchor_ratio = 1.0
         self._num_anchors = 1
@@ -112,11 +79,9 @@ class FaceDetector:
 
     def _preprocess(self, image):
         inputs = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
-        inputs = inputs - np.array([127.5, 127.5, 127.5])
-        inputs = inputs / 128
+        inputs = (inputs - 127.5) / 128.0
         inputs = np.expand_dims(inputs, axis=0)
         inputs = np.transpose(inputs, [0, 3, 1, 2])
-
         return inputs.astype(np.float32)
 
     def forward(self, img, threshold):
@@ -125,8 +90,7 @@ class FaceDetector:
         kpss_list = []
 
         inputs = self._preprocess(img)
-        predictions = self.session.run(
-            self.output_names, {self.input_name: inputs})
+        predictions = self.session.run(self.output_names, {self.input_name: inputs})
 
         input_height = inputs.shape[2]
         input_width = inputs.shape[3]
@@ -138,7 +102,6 @@ class FaceDetector:
             if self._with_kps:
                 kps_preds = predictions[idx + offset * 2] * stride
 
-            # Generate the anchors.
             height = input_height // stride
             width = input_width // stride
             key = (height, width, stride)
@@ -146,7 +109,6 @@ class FaceDetector:
             if key in self.center_cache:
                 anchor_centers = self.center_cache[key]
             else:
-                # solution-3:
                 anchor_centers = np.stack(
                     np.mgrid[:height, :width][::-1], axis=-1).astype(np.float32)
                 anchor_centers = (anchor_centers * stride).reshape((-1, 2))
@@ -158,20 +120,6 @@ class FaceDetector:
                 if len(self.center_cache) < 100:
                     self.center_cache[key] = anchor_centers
 
-                # solution-1, c style:
-                # anchor_centers = np.zeros( (height, width, 2), dtype=np.float32 )
-                # for i in range(height):
-                #    anchor_centers[i, :, 1] = i
-                # for i in range(width):
-                #    anchor_centers[:, i, 0] = i
-
-                # solution-2:
-                # ax = np.arange(width, dtype=np.float32)
-                # ay = np.arange(height, dtype=np.float32)
-                # xv, yv = np.meshgrid(np.arange(width), np.arange(height))
-                # anchor_centers = np.stack([xv, yv], axis=-1).astype(np.float32)
-
-            # Filter the results by scores and threshold.
             pos_inds = np.where(scores_pred >= threshold)[0]
             bboxes = distance2bbox(anchor_centers, bbox_preds)
             pos_scores = scores_pred[pos_inds]
@@ -188,7 +136,6 @@ class FaceDetector:
         return scores_list, bboxes_list, kpss_list
 
     def _nms(self, detections):
-        """None max suppression."""
         x1 = detections[:, 0]
         y1 = detections[:, 1]
         x2 = detections[:, 2]
@@ -221,10 +168,8 @@ class FaceDetector:
     def detect(self, img, threshold=0.5, input_size=None, max_num=0, metric='default'):
         input_size = self.input_size if input_size is None else input_size
 
-        # Rescale the image?
         img_height, img_width, _ = img.shape
         ratio_img = float(img_height) / img_width
-
         input_width, input_height = input_size
         ratio_model = float(input_height) / input_width
 
@@ -254,7 +199,6 @@ class FaceDetector:
         pre_det = pre_det[order, :]
 
         keep = self._nms(pre_det)
-
         det = pre_det[keep, :]
 
         if self._with_kps:
@@ -269,42 +213,22 @@ class FaceDetector:
             offsets = np.vstack([
                 (det[:, 0] + det[:, 2]) / 2 - img_center[1],
                 (det[:, 1] + det[:, 3]) / 2 - img_center[0]])
-
             offset_dist_squared = np.sum(np.power(offsets, 2.0), 0)
-
-            if metric == 'max':
-                values = area
-            else:
-                # some extra weight on the centering
-                values = area - offset_dist_squared * 2.0
-
-            # some extra weight on the centering
-            bindex = np.argsort(values)[::-1]
-            bindex = bindex[0:max_num]
+            values = area - offset_dist_squared * 2.0 if metric != 'max' else area
+            bindex = np.argsort(values)[::-1][:max_num]
             det = det[bindex, :]
-
             if kpss is not None:
                 kpss = kpss[bindex, :]
 
         return det, kpss
 
     def visualize(self, image, results, box_color=(0, 255, 0), text_color=(0, 0, 0)):
-        """Visualize the detection results.
-
-        Args:
-            image (np.ndarray): image to draw marks on.
-            results (np.ndarray): face detection results.
-            box_color (tuple, optional): color of the face box. Defaults to (0, 255, 0).
-            text_color (tuple, optional): color of the face marks (5 points). Defaults to (0, 0, 255).
-        """
         for det in results:
             bbox = det[0:4].astype(np.int32)
             conf = det[-1]
-            cv2.rectangle(image, (bbox[0], bbox[1]),
-                          (bbox[2], bbox[3]), box_color)
+            cv2.rectangle(image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), box_color)
             label = f"face: {conf:.2f}"
-            label_size, base_line = cv2.getTextSize(
-                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            label_size, base_line = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             cv2.rectangle(image, (bbox[0], bbox[1] - label_size[1]),
                           (bbox[2], bbox[1] + base_line), box_color, cv2.FILLED)
             cv2.putText(image, label, (bbox[0], bbox[1]),
