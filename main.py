@@ -34,7 +34,7 @@ CALIB_FILE = "calibration.json"
 # COMANDOS DE VOZ — VOSK + PYAUTOGUI
 # =============================================================================
 
-MODEL_PATH  = r"C:\Users\bielr\Downloads\vosk-model-small-pt-0.3\vosk-model-small-pt-0.3"
+MODEL_PATH  = r"assets\vosk-model-small-pt-0.3"
 SAMPLE_RATE = 16000
 CHUNK_SIZE  = 2000
 
