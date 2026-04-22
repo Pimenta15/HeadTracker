@@ -1,8 +1,11 @@
 from argparse import ArgumentParser
-from collections import deque
 import json
 import os
 import time
+import threading
+import queue
+import subprocess
+import sys
 import cv2
 import pyautogui
 import numpy as np
@@ -11,6 +14,9 @@ from face_detection import FaceDetector
 from mark_detection import MarkDetector
 from pose_estimation import PoseEstimator
 from utils import refine
+
+import pyaudio
+from vosk import Model, KaldiRecognizer
 
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = False
@@ -25,8 +31,227 @@ args = parser.parse_args()
 CALIB_FILE = "calibration.json"
 
 # =============================================================================
-# RASTREAMENTO 3D POR MODELO — MÉTODO DE NEWTON
+# COMANDOS DE VOZ — VOSK + PYAUTOGUI
 # =============================================================================
+
+MODEL_PATH  = r"C:\Users\bielr\Downloads\vosk-model-small-pt-0.3\vosk-model-small-pt-0.3"
+SAMPLE_RATE = 16000
+CHUNK_SIZE  = 2000
+
+def segurar_mouse():
+    pyautogui.mouseDown()
+
+def soltar_mouse():
+    pyautogui.mouseUp()
+
+def alternar_windows():
+    pyautogui.hotkey("win", "tab")
+
+def teclado_windows():
+    pyautogui.hotkey("win", "2")
+
+def abrir_navegador():
+    import webbrowser
+    webbrowser.open("https://www.google.com")
+
+def fechar_janela():
+    if sys.platform == "darwin":
+        pyautogui.hotkey("command", "w")
+    else:
+        pyautogui.hotkey("alt", "F4")
+
+def clique_mouse():
+    pyautogui.leftClick()
+
+def cliquedireito_mouse():
+    pyautogui.rightClick()
+
+def aumentar_zoom():
+    pyautogui.hotkey("ctrl", "+")
+
+def diminuir_zoom():
+    pyautogui.hotkey("ctrl", "-")
+
+def tirar_screenshot():
+    screenshot = pyautogui.screenshot()
+    caminho = os.path.join(os.path.expanduser("~"), "Desktop",
+                           f"screenshot_{int(time.time())}.png")
+    screenshot.save(caminho)
+    print(f"[✓] Screenshot salvo em: {caminho}")
+
+def volume_aumentar():
+    for _ in range(5):
+        pyautogui.press("volumeup")
+
+def volume_diminuir():
+    for _ in range(5):
+        pyautogui.press("volumedown")
+
+def mutar():
+    pyautogui.press("volumemute")
+
+def copiar():
+    pyautogui.hotkey("ctrl", "c")
+
+def colar():
+    pyautogui.hotkey("ctrl", "v")
+
+def desfazer():
+    pyautogui.hotkey("ctrl", "z")
+
+def rolar_cima():
+    pyautogui.scroll(5)
+
+def rolar_baixo():
+    pyautogui.scroll(-5)
+
+def minimizar():
+    if sys.platform == "darwin":
+        pyautogui.hotkey("command", "m")
+    else:
+        pyautogui.hotkey("win", "down")
+
+def abrir_terminal():
+    if sys.platform == "win32":
+        subprocess.Popen(["cmd.exe"])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-a", "Terminal"])
+    else:
+        for terminal in ["gnome-terminal", "xterm", "konsole", "xfce4-terminal"]:
+            try:
+                subprocess.Popen([terminal])
+                break
+            except FileNotFoundError:
+                continue
+
+def encerrar_programa():
+    print("\n[!] Comando 'encerrar' detectado. Encerrando programa...")
+    os._exit(0)
+
+
+COMANDOS = {
+    "abre navegador":    abrir_navegador,
+    "fechar janela":     fechar_janela,
+    "screenshot":        tirar_screenshot,
+    "som":               volume_aumentar,
+    "abaixa":            volume_diminuir,
+    "março":             mutar,
+    "copiar":            copiar,
+    "colar":             colar,
+    "desfazer":          desfazer,
+    "rolar cima":        rolar_cima,
+    "rolar baixo":       rolar_baixo,
+    "minimizar":         minimizar,
+    "abrir terminal":    abrir_terminal,
+    "encerrar programa": encerrar_programa,
+    "show":              clique_mouse,
+    "sou":               clique_mouse,
+    "aumenta":           aumentar_zoom,
+    "diminui":           diminuir_zoom,
+    "troca":             alternar_windows,
+    "quadro":            teclado_windows,
+    "fato":              cliquedireito_mouse,
+    "colo":              segurar_mouse,
+    "joia":              soltar_mouse,
+}
+
+
+class VoiceCommandEngine:
+    def __init__(self, model_path, comandos, sample_rate=SAMPLE_RATE, chunk_size=CHUNK_SIZE):
+        if not os.path.isdir(model_path):
+            raise FileNotFoundError(
+                f"Pasta do modelo não encontrada: '{model_path}'\n"
+                "Baixe em https://alphacephei.com/vosk/models e extraia como 'model/'"
+            )
+        print(f"[*] Carregando modelo Vosk de '{model_path}'...")
+        self.model      = Model(model_path)
+        self.recognizer = KaldiRecognizer(self.model, sample_rate)
+        self.recognizer.SetWords(True)
+
+        palavras = []
+        for frase in comandos.keys():
+            palavras.extend(frase.split())
+        vocab = json.dumps(list(set(palavras)) + ["[unk]"])
+        self.recognizer.SetGrammar(vocab)
+        print(f"[*] Vocabulário restrito a {len(set(palavras))} palavras dos comandos.")
+
+        self.comandos        = comandos
+        self.sample_rate     = sample_rate
+        self.chunk_size      = chunk_size
+        self._audio_q        = queue.Queue()
+        self._running        = False
+        self._ultimo_comando   = ""
+        self._ultimo_exec_time = 0.0
+        self._cooldown         = 1.2
+
+    def _audio_callback(self, in_data, frame_count, time_info, status):
+        self._audio_q.put(in_data)
+        return (None, pyaudio.paContinue)
+
+    def _processar_texto(self, texto):
+        texto = texto.lower().strip()
+        if not texto:
+            self._ultimo_comando = ""
+            return
+        for frase, acao in self.comandos.items():
+            if frase in texto:
+                agora = time.time()
+                mesmo_comando   = self._ultimo_comando == frase
+                dentro_cooldown = (agora - self._ultimo_exec_time) < self._cooldown
+                if mesmo_comando and dentro_cooldown:
+                    return
+                print(f"[flash] Executando: {frase} -> {acao.__name__}")
+                self._ultimo_comando   = frase
+                self._ultimo_exec_time = agora
+                try:
+                    acao()
+                except Exception as e:
+                    print(f"[X] Erro ao executar '{frase}': {e}")
+                return
+        self._ultimo_comando = ""
+
+    def _recognition_loop(self):
+        while self._running:
+            try:
+                data = self._audio_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if self.recognizer.AcceptWaveform(data):
+                resultado = json.loads(self.recognizer.Result())
+                texto = resultado.get("text", "")
+                if texto:
+                    print(f"[mic] Final: \"{texto}\"")
+                self._processar_texto(texto)
+            else:
+                parcial = json.loads(self.recognizer.PartialResult())
+                texto_parcial = parcial.get("partial", "")
+                if texto_parcial:
+                    print(f"[...] Parcial: \"{texto_parcial}\"", end="\r")
+                    self._processar_texto(texto_parcial)
+
+    def iniciar(self):
+        pa = pyaudio.PyAudio()
+        stream = pa.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=self.sample_rate,
+            input=True,
+            frames_per_buffer=self.chunk_size,
+            stream_callback=self._audio_callback,
+        )
+        self._running = True
+        thread = threading.Thread(target=self._recognition_loop, daemon=True)
+        thread.start()
+        stream.start_stream()
+        print("[OK] Reconhecimento de voz ativo!")
+        print("Comandos disponíveis:")
+        for cmd in self.comandos:
+            print(f"   * \"{cmd}\"")
+
+
+# =============================================================================
+# RASTREAMENTO 3D POR MODELO — MÉTODO DE NEWTON
 #
 # Pipeline por frame:
 #   1. LK forward + backward: rastreia projeções do modelo 3D e descarta pontos
@@ -72,7 +297,7 @@ class OneEuroFilter:
 
 
 def precision_curve(norm, knee=0.45, knee_out=0.3):
-    """Piecewise linear: precisão fina no centro, aceleração nas bordas."""
+    """Piecewise linear: centro mais rápido (navegação), bordas mais lentas (precisão)."""
     s = np.sign(norm)
     a = abs(norm)
     out = (a / knee) * knee_out if a <= knee else knee_out + ((a - knee) / (1.0 - knee)) * (1.0 - knee_out)
@@ -107,9 +332,14 @@ def save_calibration(data):
     print(f"Calibração salva em {CALIB_FILE}")
 
 
-
-
 def run():
+    try:
+        engine = VoiceCommandEngine(model_path=MODEL_PATH, comandos=COMANDOS)
+        voz_thread = threading.Thread(target=engine.iniciar, daemon=True)
+        voz_thread.start()
+    except Exception as e:
+        print(f"[!] Voz não iniciada: {e}")
+
     video_src = args.cam if args.video is None else args.video
     cap = cv2.VideoCapture(video_src)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -157,7 +387,6 @@ def run():
     filt_yaw    = OneEuroFilter(min_cutoff=0.08, beta=0.15)
     have_sample = False
 
-
     curr_mouse_x, curr_mouse_y = screen_w / 2, screen_h / 2
 
     MAX_ANGLE_DELTA = 2.5
@@ -168,7 +397,7 @@ def run():
 
     # --- PARÂMETROS DE RASTREAMENTO 3D ---
     REPROJ_THRESH = 8.0
-    FB_THRESH     = 2.0   # pixels — limiar de consistência forward-backward do LK
+    FB_THRESH     = 2.0
     LK_PARAMS = dict(
         winSize =(21, 21),
         maxLevel=3,
@@ -201,10 +430,6 @@ def run():
 
         # ------------------------------------------------------------------ #
         #  PASSO 1 — Lucas-Kanade com verificação forward-backward            #
-        #                                                                      #
-        #  Para cada ponto rastreado, executa LK na direção inversa a partir  #
-        #  da nova posição. Se o ponto não voltar perto da origem, é outlier  #
-        #  (oclusão, ruído, rosto virado) e é descartado antes do solvePnP.  #
         # ------------------------------------------------------------------ #
         if tracking_active and not need_landmarks and prev_gray is not None:
             new_pts, status_fw, _ = cv2.calcOpticalFlowPyrLK(
@@ -283,8 +508,8 @@ def run():
                         flags=cv2.SOLVEPNP_EPNP)
 
                     if ok:
-                        r_vec_track = r_init
-                        t_vec_track = t_init
+                        r_vec_track     = r_init
+                        t_vec_track     = t_init
                         proj_all, _ = cv2.projectPoints(
                             pose_estimator.model_points_68,
                             r_vec_track, t_vec_track,
@@ -337,7 +562,6 @@ def run():
             delta_pitch = raw_pitch - neutral_pitch
             delta_yaw   = raw_yaw   - neutral_yaw
 
-            # Deadzone suave: ramp quadrática — sem snap binário na borda
             delta_yaw   = soft_deadzone(delta_yaw,   deadzone_inner_yaw,   deadzone_outer_yaw)
             delta_pitch = soft_deadzone(delta_pitch, deadzone_inner_pitch, deadzone_outer_pitch)
 
