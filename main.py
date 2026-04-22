@@ -1,4 +1,7 @@
 from argparse import ArgumentParser
+from collections import deque
+import json
+import os
 import time
 import cv2
 import pyautogui
@@ -12,47 +15,30 @@ from utils import refine
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = False
 screen_w, screen_h = pyautogui.size()
+CORNER_MARGIN = 2
 
 parser = ArgumentParser()
 parser.add_argument("--video", type=str, default=None)
 parser.add_argument("--cam", type=int, default=0)
 args = parser.parse_args()
 
+CALIB_FILE = "calibration.json"
 
 # =============================================================================
 # RASTREAMENTO 3D POR MODELO — MÉTODO DE NEWTON
 # =============================================================================
 #
-# Estado do sistema: pose 6-DoF  p = (r_vec, t_vec)  ∈ ℝ⁶
-#
-# A cada frame, minimizamos o erro de reprojeção 2D dos 68 pontos do modelo 3D:
-#
-#   E(p) = Σᵢ || xᵢ_obs - π(Mᵢ, p) ||²
-#
-# onde:
-#   Mᵢ  = ponto 3D do modelo de face (assets/model.txt)
-#   π   = projeção pela câmara pinhole
-#   xᵢ  = observação 2D no frame atual
-#
-# A minimização segue o passo de Newton (Gauss-Newton):
-#
-#   Δp = -(JᵀJ)⁻¹ Jᵀ r        (solvePnP executa isso)
-#
-# As observações 2D (xᵢ) são obtidas por Lucas-Kanade:
-#   dado xᵢ no frame t-1, LK resolve  d = (JᵀJ)⁻¹ Jᵀ r  na imagem
-#   (outro loop de Newton, desta vez no espaço da imagem).
-#
 # Pipeline por frame:
-#   1. Projeta modelo 3D com pose anterior → posições 2D previstas
-#   2. LK rastreia essas posições → novas observações 2D
-#   3. solvePnP (Newton) → nova pose 3D
-#   4. A cada REDETECT_EVERY frames: re-executa mark_detector para corrigir deriva
+#   1. LK forward + backward: rastreia projeções do modelo 3D e descarta pontos
+#      cuja trajetória não é reversível (outliers por oclusão, ruído, rosto virado)
+#   2. solvePnP (Gauss-Newton) com os pontos validados → nova pose 6-DoF
+#   3. Re-inicializa com CNN apenas quando rastreamento genuinamente falha
 # =============================================================================
 
 
 class OneEuroFilter:
     """Filtro adaptativo: suave quando parado (min_cutoff baixo), responsivo em movimento."""
-    def __init__(self, min_cutoff=0.2, beta=0.1, d_cutoff=1.0):
+    def __init__(self, min_cutoff=0.15, beta=0.15, d_cutoff=1.0):
         self.min_cutoff = min_cutoff
         self.beta       = beta
         self.d_cutoff   = d_cutoff
@@ -81,6 +67,9 @@ class OneEuroFilter:
         self.t_prev  = t
         return x_hat
 
+    def reset(self):
+        self.x_prev = None; self.dx_prev = 0.0; self.t_prev = None
+
 
 def precision_curve(norm, knee=0.45, knee_out=0.3):
     """Piecewise linear: precisão fina no centro, aceleração nas bordas."""
@@ -88,6 +77,36 @@ def precision_curve(norm, knee=0.45, knee_out=0.3):
     a = abs(norm)
     out = (a / knee) * knee_out if a <= knee else knee_out + ((a - knee) / (1.0 - knee)) * (1.0 - knee_out)
     return s * out
+
+
+def soft_deadzone(val, inner_dz, outer_dz):
+    """Zero dentro de inner_dz; ramp quadrática até outer_dz. Elimina snap binário."""
+    s = np.sign(val)
+    a = abs(val)
+    if a <= inner_dz:
+        return 0.0
+    elif a >= outer_dz:
+        return s * (a - inner_dz)
+    t = (a - inner_dz) / (outer_dz - inner_dz)
+    return s * (a - inner_dz) * (t * t)
+
+
+def load_calibration():
+    if os.path.exists(CALIB_FILE):
+        try:
+            with open(CALIB_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def save_calibration(data):
+    with open(CALIB_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"Calibração salva em {CALIB_FILE}")
+
+
 
 
 def run():
@@ -109,54 +128,64 @@ def run():
     tm = cv2.TickMeter()
 
     # --- PARÂMETROS DE CONTROLE ---
-    deadzone_yaw   = 0.4
-    deadzone_pitch = 0.3
     max_yaw_deg    = 14.0
     max_pitch_deg  = 8.0
-    curve_knee     = 0.45
-    curve_knee_out = 0.3
+    # centro → movimento normal/rápido (navegação); bordas → mais lento (preciso)
+    # knee_out > knee = desacelera nas bordas sem limitar range máximo (cantos sempre alcançáveis)
+    curve_knee     = 0.65
+    curve_knee_out = 0.65
 
-    filt_pitch  = OneEuroFilter(min_cutoff=0.2, beta=0.1)
-    filt_yaw    = OneEuroFilter(min_cutoff=0.2, beta=0.1)
+    deadzone_inner_yaw   = 0.0
+    deadzone_outer_yaw   = 0.0
+    deadzone_inner_pitch = 0.0
+    deadzone_outer_pitch = 0.0
+
+    saved = load_calibration()
+    if saved:
+        neutral_pitch = saved.get("neutral_pitch", 0.0)
+        neutral_yaw   = saved.get("neutral_yaw",   0.0)
+        max_yaw_deg   = saved.get("max_yaw_deg",   max_yaw_deg)
+        max_pitch_deg = saved.get("max_pitch_deg", max_pitch_deg)
+        is_calibrated = True
+        print(f"Calibração carregada: yaw±{max_yaw_deg:.1f}° pitch±{max_pitch_deg:.1f}°")
+    else:
+        neutral_pitch = 0.0
+        neutral_yaw   = 0.0
+        is_calibrated = False
+
+    filt_pitch  = OneEuroFilter(min_cutoff=0.08, beta=0.15)
+    filt_yaw    = OneEuroFilter(min_cutoff=0.08, beta=0.15)
     have_sample = False
 
-    neutral_pitch = 0.0
-    neutral_yaw   = 0.0
-    is_calibrated = False
 
     curr_mouse_x, curr_mouse_y = screen_w / 2, screen_h / 2
 
-    # Limita variação máxima de ângulo por frame (absorve teleporte do reinit)
-    MAX_ANGLE_DELTA = 2.5   # graus/frame
+    MAX_ANGLE_DELTA = 2.5
     prev_raw_pitch  = None
     prev_raw_yaw    = None
-    # Após reinit, segura o mouse por alguns frames enquanto filtro estabiliza
     WARMUP_FRAMES   = 6
     warmup_count    = WARMUP_FRAMES
 
     # --- PARÂMETROS DE RASTREAMENTO 3D ---
-    # Reinicializa apenas quando o rastreamento degrada — sem timer fixo.
-    REPROJ_THRESH   = 8.0     # erro de reprojeção médio (px) que dispara reinit
+    REPROJ_THRESH = 8.0
+    FB_THRESH     = 2.0   # pixels — limiar de consistência forward-backward do LK
     LK_PARAMS = dict(
         winSize =(21, 21),
         maxLevel=3,
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.01),
     )
-    MIN_TRACKED = 20          # mínimo de pontos com boa confiança LK para manter tracking
+    MIN_TRACKED = 20
 
-    # Estado 3D
-    prev_gray      = None
-    track_pts_2d   = None
-    track_pts_3d   = None
-    r_vec_track    = None
-    t_vec_track    = None
-    frames_tracked  = 0   # apenas para exibição
+    prev_gray       = None
+    track_pts_2d    = None
+    track_pts_3d    = None
+    r_vec_track     = None
+    t_vec_track     = None
+    frames_tracked  = 0
     tracking_active = False
 
-    print("=== CONTROLE INICIADO (RASTREAMENTO 3D — MODELO DE NEWTON) ===")
-    print("Pressione 'c' para CALIBRAR O CENTRO.")
-    print("Pressione 'r' para forçar reinicialização do rastreamento.")
-    print("Pressione 'q' ou 'ESC' para sair.")
+    print("=== CONTROLE INICIADO ===")
+    print("'c' → calibrar centro  |  'r' → reiniciar  |  'q'/ESC → sair")
 
     while True:
         frame_got, frame = cap.read()
@@ -171,22 +200,30 @@ def run():
         need_landmarks = not tracking_active
 
         # ------------------------------------------------------------------ #
-        #  PASSO 1 — Lucas-Kanade: rastreia projeções do modelo 3D            #
-        #  d = (JᵀJ)⁻¹ Jᵀ r  no espaço da imagem                             #
+        #  PASSO 1 — Lucas-Kanade com verificação forward-backward            #
+        #                                                                      #
+        #  Para cada ponto rastreado, executa LK na direção inversa a partir  #
+        #  da nova posição. Se o ponto não voltar perto da origem, é outlier  #
+        #  (oclusão, ruído, rosto virado) e é descartado antes do solvePnP.  #
         # ------------------------------------------------------------------ #
         if tracking_active and not need_landmarks and prev_gray is not None:
-            new_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+            new_pts, status_fw, _ = cv2.calcOpticalFlowPyrLK(
                 prev_gray, gray, track_pts_2d, None, **LK_PARAMS)
+            back_pts, status_bw, _ = cv2.calcOpticalFlowPyrLK(
+                gray, prev_gray, new_pts, None, **LK_PARAMS)
 
-            good_mask = status.ravel() == 1
+            fb_err    = np.linalg.norm(
+                (track_pts_2d - back_pts).reshape(-1, 2), axis=1)
+            good_mask = (
+                (status_fw.ravel() == 1) &
+                (status_bw.ravel() == 1) &
+                (fb_err < FB_THRESH)
+            )
+
             if good_mask.sum() >= MIN_TRACKED:
                 obs_2d = new_pts[good_mask].reshape(-1, 2).astype(np.float64)
                 mod_3d = track_pts_3d[good_mask].astype(np.float64)
 
-                # ---------------------------------------------------------- #
-                #  PASSO 2 — solvePnP: Newton sobre o erro de reprojeção 3D  #
-                #  Δp = -(JᵀJ)⁻¹ Jᵀ r  no espaço da pose 6-DoF              #
-                # ---------------------------------------------------------- #
                 ok, r_new, t_new = cv2.solvePnP(
                     mod_3d, obs_2d,
                     pose_estimator.camera_matrix,
@@ -196,7 +233,6 @@ def run():
                     flags=cv2.SOLVEPNP_ITERATIVE)
 
                 if ok:
-                    # Calcula erro de reprojeção médio (px) antes de aceitar a pose
                     proj_check, _ = cv2.projectPoints(
                         mod_3d, r_new, t_new,
                         pose_estimator.camera_matrix,
@@ -205,7 +241,6 @@ def run():
                         np.linalg.norm(proj_check.reshape(-1, 2) - obs_2d, axis=1)))
 
                     if reproj_err < REPROJ_THRESH:
-                        # Rastreamento confiável — aceita nova pose
                         r_vec_track  = r_new
                         t_vec_track  = t_new
                         proj_all, _ = cv2.projectPoints(
@@ -217,7 +252,6 @@ def run():
                         track_pts_3d = pose_estimator.model_points_68.copy()
                         frames_tracked += 1
                     else:
-                        # Erro alto → rastreamento degradou → reinicializa
                         need_landmarks = True
                 else:
                     need_landmarks = True
@@ -225,7 +259,7 @@ def run():
                 need_landmarks = True
 
         # ------------------------------------------------------------------ #
-        #  PASSO 3 — Re-inicialização: detector + landmark CNN                #
+        #  PASSO 2 — Re-inicialização por landmarks (só quando falha real)    #
         # ------------------------------------------------------------------ #
         if need_landmarks:
             faces, _ = face_detector.detect(frame, 0.7)
@@ -241,7 +275,6 @@ def run():
                     marks[:, 0] += rx1
                     marks[:, 1] += ry1
 
-                    # Pose inicial via EPNP (sem memória de frames anteriores)
                     ok, r_init, t_init = cv2.solvePnP(
                         pose_estimator.model_points_68.astype(np.float64),
                         marks.astype(np.float64),
@@ -257,23 +290,25 @@ def run():
                             r_vec_track, t_vec_track,
                             pose_estimator.camera_matrix,
                             pose_estimator.dist_coeefs)
-                        track_pts_2d = proj_all.astype(np.float32)
-                        track_pts_3d = pose_estimator.model_points_68.copy()
-                        frames_tracked = 0
+                        track_pts_2d    = proj_all.astype(np.float32)
+                        track_pts_3d    = pose_estimator.model_points_68.copy()
+                        frames_tracked  = 0
                         tracking_active = True
                         need_landmarks  = False
-                        # Reinit: segura o mouse enquanto filtro estabiliza
-                        warmup_count = WARMUP_FRAMES
-                        prev_raw_pitch = None
-                        prev_raw_yaw   = None
+                        warmup_count    = WARMUP_FRAMES
+                        prev_raw_pitch  = None
+                        prev_raw_yaw    = None
             else:
                 tracking_active = False
 
         prev_gray = gray
 
         # ------------------------------------------------------------------ #
-        #  PASSO 4 — Ângulos → mouse                                          #
+        #  PASSO 3 — Ângulos → mouse                                          #
         # ------------------------------------------------------------------ #
+        raw_pitch = raw_yaw = 0.0
+        delta_pitch = delta_yaw = 0.0
+
         if tracking_active and r_vec_track is not None:
             rmat, _ = cv2.Rodrigues(r_vec_track)
             angles, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
@@ -282,7 +317,6 @@ def run():
             raw_pitch = float(filt_pitch(angles[0], t_now))
             raw_yaw   = float(filt_yaw(angles[1], t_now))
 
-            # Clamp de velocidade: absorve saltos do reinit e glitches do LK
             if prev_raw_pitch is not None:
                 raw_pitch = np.clip(raw_pitch,
                                     prev_raw_pitch - MAX_ANGLE_DELTA,
@@ -303,26 +337,27 @@ def run():
             delta_pitch = raw_pitch - neutral_pitch
             delta_yaw   = raw_yaw   - neutral_yaw
 
-            if abs(delta_yaw)   < deadzone_yaw:   delta_yaw   = 0.0
-            if abs(delta_pitch) < deadzone_pitch:  delta_pitch = 0.0
+            # Deadzone suave: ramp quadrática — sem snap binário na borda
+            delta_yaw   = soft_deadzone(delta_yaw,   deadzone_inner_yaw,   deadzone_outer_yaw)
+            delta_pitch = soft_deadzone(delta_pitch, deadzone_inner_pitch, deadzone_outer_pitch)
 
-            norm_x = max(-1.0, min(1.0, delta_yaw   / max_yaw_deg))
-            norm_y = max(-1.0, min(1.0, delta_pitch / max_pitch_deg))
+            norm_x = float(np.clip(delta_yaw   / max_yaw_deg,   -1.0, 1.0))
+            norm_y = float(np.clip(delta_pitch / max_pitch_deg, -1.0, 1.0))
 
             mapped_x = precision_curve(norm_x, curve_knee, curve_knee_out)
             mapped_y = precision_curve(norm_y, curve_knee, curve_knee_out)
 
-            target_x = (screen_w / 2) + (mapped_x * (screen_w / 2))
-            target_y = (screen_h / 2) - (mapped_y * (screen_h / 2))
+            target_x = float(np.clip((screen_w / 2) + (mapped_x * (screen_w / 2)), CORNER_MARGIN, screen_w - 1 - CORNER_MARGIN))
+            target_y = float(np.clip((screen_h / 2) - (mapped_y * (screen_h / 2)), CORNER_MARGIN, screen_h - 1 - CORNER_MARGIN))
 
-            dist = np.hypot(target_x - curr_mouse_x, target_y - curr_mouse_y)
-            alpha = float(np.clip(dist / 250.0, 0.06, 0.5))
+            dist  = np.hypot(target_x - curr_mouse_x, target_y - curr_mouse_y)
+            alpha = float(np.clip(dist / 100.0, 0.20, 0.55))
             curr_mouse_x += (target_x - curr_mouse_x) * alpha
             curr_mouse_y += (target_y - curr_mouse_y) * alpha
             if dist < 2.0:
                 curr_mouse_x, curr_mouse_y = target_x, target_y
-            if abs(mapped_x) >= 0.999: curr_mouse_x = target_x
-            if abs(mapped_y) >= 0.999: curr_mouse_y = target_y
+            curr_mouse_x = float(np.clip(curr_mouse_x, CORNER_MARGIN, screen_w - 1 - CORNER_MARGIN))
+            curr_mouse_y = float(np.clip(curr_mouse_y, CORNER_MARGIN, screen_h - 1 - CORNER_MARGIN))
 
             if warmup_count > 0:
                 warmup_count -= 1
@@ -330,7 +365,6 @@ def run():
                 pyautogui.moveTo(int(curr_mouse_x), int(curr_mouse_y))
             tm.stop()
 
-            # Visualização: projeções 3D (pontos amarelos = âncoras do modelo)
             pose_estimator.visualize(frame, (r_vec_track, t_vec_track), color=(0, 255, 0))
             if track_pts_2d is not None:
                 for pt in track_pts_2d.reshape(-1, 2).astype(int):
@@ -346,8 +380,7 @@ def run():
             cv2.putText(frame, mode_txt,
                         (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_color, 2)
             if delta_yaw == 0.0 and delta_pitch == 0.0:
-                cv2.putText(frame, "DEADZONE", (10, 140),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.putText(frame, "DEADZONE", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 180, 255), 2)
         else:
             tm.stop()
             cv2.putText(frame, "Procurando rosto...", (10, 50),
@@ -361,11 +394,13 @@ def run():
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):
             break
+
         if key == ord('c') and have_sample:
-            neutral_pitch = float(filt_pitch.x_prev)
-            neutral_yaw   = float(filt_yaw.x_prev)
+            neutral_pitch = float(filt_pitch.x_prev) if filt_pitch.x_prev is not None else raw_pitch
+            neutral_yaw   = float(filt_yaw.x_prev)   if filt_yaw.x_prev   is not None else raw_yaw
             is_calibrated = True
             print("Centro recalibrado!")
+
         if key == ord('r'):
             tracking_active = False
             track_pts_2d    = None
@@ -376,7 +411,12 @@ def run():
             prev_raw_yaw    = None
             warmup_count    = WARMUP_FRAMES
             frames_tracked  = 0
+            filt_pitch.reset()
+            filt_yaw.reset()
             print("Rastreamento reinicializado!")
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':
