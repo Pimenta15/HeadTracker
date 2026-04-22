@@ -1,8 +1,10 @@
+"""Utility to enumerate and preview connected cameras."""
 import cv2
+
 
 def listar_cameras():
     print("Buscando câmeras conectadas...")
-    for i in range(5): # Testa os slots de 0 a 4
+    for i in range(5):
         cap = cv2.VideoCapture(i)
         if cap.isOpened():
             ret, frame = cap.read()
@@ -14,6 +16,7 @@ def listar_cameras():
             cap.release()
         else:
             print(f"[FALHA] Nenhuma câmera no Índice: {i}")
+
 
 if __name__ == "__main__":
     listar_cameras()
