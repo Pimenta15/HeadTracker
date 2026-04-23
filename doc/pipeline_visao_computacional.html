@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <title>HeadTracker — Pipeline de Visão Computacional</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.65;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 48px 64px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    /* ── headings ─────────────────────────────── */
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      border-bottom: 3px solid #2563eb;
+      padding-bottom: 10px;
+      margin-bottom: 6px;
+      color: #111;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 28px;
+    }
+    h2 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #1d4ed8;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      /* heading must never be left alone at bottom of page */
+      break-after: avoid;
+      page-break-after: avoid;
+    }
+    h2 .stage {
+      display: inline-block;
+      background: #2563eb;
+      color: #fff;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 7px;
+      letter-spacing: 0.05em;
+      flex-shrink: 0;
+    }
+    h3 {
+      font-size: 13px;
+      font-weight: 700;
+      margin-top: 14px;
+      margin-bottom: 4px;
+      color: #374151;
+      break-after: avoid;
+      page-break-after: avoid;
+    }
+
+    /* ── body text ────────────────────────────── */
+    p { margin-bottom: 10px; orphans: 3; widows: 3; }
+    ul, ol { padding-left: 22px; margin-bottom: 10px; }
+    li { margin-bottom: 4px; }
+    code {
+      font-family: "Consolas", "Courier New", monospace;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 3px;
+      padding: 0 4px;
+      font-size: 11.5px;
+    }
+
+    /* ── blocks ───────────────────────────────── */
+    .formula {
+      background: #f8fafc;
+      border-left: 3px solid #2563eb;
+      padding: 10px 16px;
+      margin: 10px 0;
+      font-family: "Consolas", "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      color: #1e3a8a;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .note {
+      background: #fffbeb;
+      border-left: 3px solid #f59e0b;
+      padding: 8px 14px;
+      margin: 10px 0;
+      font-size: 12px;
+      color: #78350f;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .intro-flow {
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      border-radius: 6px;
+      padding: 12px 20px;
+      margin: 14px 0;
+      font-family: "Consolas", monospace;
+      font-size: 11.5px;
+      color: #0369a1;
+      line-height: 1.9;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0;
+      font-size: 12px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    th {
+      background: #1d4ed8;
+      color: #fff;
+      padding: 6px 10px;
+      text-align: left;
+      font-weight: 600;
+    }
+    td { padding: 5px 10px; border-bottom: 1px solid #e2e8f0; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    .file-ref {
+      font-family: "Consolas", monospace;
+      font-size: 11px;
+      color: #6b7280;
+      font-style: italic;
+      margin-bottom: 8px;
+      /* must stay with the h2 above */
+      break-before: avoid;
+      page-break-before: avoid;
+    }
+
+    /* ── section wrapper: keeps h2 + first content together ── */
+    .section {
+      margin-top: 32px;
+    }
+    /* small groups that must not be split: h3 + content */
+    .subgroup {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    /* divider between major sections */
+    .divider {
+      border: none;
+      border-top: 1px solid #e2e8f0;
+      margin: 28px 0 0;
+    }
+
+    /* ══════════════════════════════════════════
+       VISUAL PIPELINE DIAGRAM
+       ══════════════════════════════════════════ */
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+      margin: 20px 0 10px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .pipe-step {
+      width: 100%;
+      border: 2px solid #2563eb;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .pipe-step-header {
+      background: #2563eb;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 3px 12px;
+    }
+    .pipe-step-body {
+      padding: 8px 14px;
+      background: #f0f9ff;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .pipe-step-body strong { color: #1d4ed8; }
+    .pipe-step-body em { color: #374151; font-size: 11px; }
+
+    /* input / output get distinct colours */
+    .pipe-step.input { border-color: #6b7280; }
+    .pipe-step.input .pipe-step-header { background: #6b7280; }
+    .pipe-step.input .pipe-step-body { background: #f9fafb; }
+
+    .pipe-step.output { border-color: #16a34a; }
+    .pipe-step.output .pipe-step-header { background: #16a34a; }
+    .pipe-step.output .pipe-step-body { background: #f0fdf4; }
+
+    /* arrow between steps */
+    .pipe-arrow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      color: #6b7280;
+      font-size: 11px;
+      line-height: 1.2;
+      margin: 2px 0;
+      user-select: none;
+    }
+    .pipe-arrow .arr-line {
+      width: 2px;
+      height: 10px;
+      background: #94a3b8;
+    }
+    .pipe-arrow .arr-head { font-size: 13px; color: #64748b; }
+    .pipe-arrow .arr-label {
+      font-size: 10px;
+      color: #6b7280;
+      font-style: italic;
+      background: #fff;
+      padding: 0 4px;
+    }
+
+    /* branching row */
+    .pipe-branch-row {
+      display: flex;
+      width: 100%;
+      gap: 12px;
+      margin: 2px 0;
+    }
+    .pipe-branch-row .pipe-step { flex: 1; }
+
+    .pipe-branch-labels {
+      display: flex;
+      width: 100%;
+      justify-content: space-around;
+      font-size: 10px;
+      color: #6b7280;
+      font-style: italic;
+      margin-bottom: 2px;
+    }
+
+    /* ── print rules ─────────────────────────── */
+    @media print {
+      body { padding: 18px 24px; }
+      @page { margin: 18mm 16mm; size: A4; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>HeadTracker — Pipeline de Visão Computacional</h1>
+<div class="subtitle">João Pedro Matos Pimenta &nbsp;·&nbsp; Abril 2026</div>
+
+<p>
+  O HeadTracker transforma ângulos da cabeça capturados por uma webcam em movimentos do cursor do rato.
+  O sistema combina deteção de face, deteção de <em>landmarks</em> faciais, estimação de pose 3D e rastreamento
+  ótico de pontos, tudo em tempo real a &gt;30 fps numa CPU convencional.
+</p>
+
+<div class="intro-flow">
+Webcam/Vídeo
+  → <strong>HeadTracker.update()</strong>           (tracker.py)
+      via rápida : LK optical flow + validação forward-backward → solvePnP
+      fallback   : FaceDetector → MarkDetector → solvePnP (EPNP)
+  → <strong>OneEuroFilter</strong>                  (filters.py)
+  → <strong>CursorController.update()</strong>       (cursor.py)
+      subtr. neutro → soft deadzone → precision curve → pyautogui.moveTo
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 1</span> Deteção de Face — SCRFD</h2>
+<p class="file-ref">headtracker/tracking/face_detection.py</p>
+
+<p>
+  O modelo utilizado é o <strong>SCRFD</strong> (<em>Sample and Computation Redistributed Face Detection</em>),
+  uma CNN ancorada exportada para ONNX e inferida via ONNX Runtime (GPU DirectML no Windows, CPU como fallback).
+</p>
+
+<div class="subgroup">
+<h3>Arquitetura — Feature Pyramid Network (FPN)</h3>
+<p>
+  A rede extrai mapas de características a três escalas diferentes (<em>strides</em> 8, 16 e 32 px).
+  Cada nível da pirâmide é responsável por detetar faces a uma gama de tamanhos:
+</p>
+<table>
+  <tr><th>Stride</th><th>Área coberta</th><th>Faces detetadas</th></tr>
+  <tr><td>8 px</td><td>Alta resolução</td><td>Faces pequenas / próximas</td></tr>
+  <tr><td>16 px</td><td>Resolução média</td><td>Faces médias</td></tr>
+  <tr><td>32 px</td><td>Baixa resolução</td><td>Faces grandes / afastadas</td></tr>
+</table>
+</div>
+
+<div class="subgroup">
+<h3>Âncoras</h3>
+<p>
+  Em cada célula da grelha de cada nível FPN existem 2 âncoras com dimensões pré-definidas.
+  A rede prevê, para cada âncora, um <em>score</em> de confiança e 4 deltas (Δx, Δy, Δw, Δh)
+  que ajustam a caixa delimitadora.
+</p>
+<div class="formula">caixa_final = âncora + (Δx·w_âncora, Δy·h_âncora, Δw·..., Δh·...)</div>
+</div>
+
+<div class="subgroup">
+<h3>NMS — Non-Maximum Suppression</h3>
+<p>
+  Após decodificar todas as caixas, filtra-se por confiança (&gt; 0.7) e aplica-se NMS com
+  <em>IoU threshold</em> 0.4: quando duas caixas se sobrepõem mais de 40 % em área,
+  apenas a de maior confiança é mantida.
+</p>
+</div>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 2</span> Deteção de Landmarks — CNN 68 pontos</h2>
+<p class="file-ref">headtracker/tracking/mark_detection.py</p>
+
+<p>
+  O recorte da face detetada é redimensionado para <strong>128 × 128 px</strong> e
+  alimentado a uma CNN leve (ONNX). A saída da camada <code>dense_1</code> são
+  136 valores que representam as coordenadas normalizadas de 68 pontos faciais.
+</p>
+
+<div class="formula">saída : [x₀, y₀, x₁, y₁, … , x₆₇, y₆₇]  ∈ [0, 1]
+
+desnormalização:
+  x_pixel = x_norm × largura_recorte + x_início_recorte
+  y_pixel = y_norm × altura_recorte  + y_início_recorte</div>
+
+<div class="subgroup">
+<h3>Distribuição dos 68 landmarks</h3>
+<table>
+  <tr><th>Índices</th><th>Região</th></tr>
+  <tr><td>0 – 16</td><td>Contorno do queixo / mandíbula</td></tr>
+  <tr><td>17 – 26</td><td>Sobrancelhas</td></tr>
+  <tr><td>27 – 35</td><td>Nariz</td></tr>
+  <tr><td>36 – 47</td><td>Olhos</td></tr>
+  <tr><td>48 – 67</td><td>Boca / lábios</td></tr>
+</table>
+</div>
+
+<div class="note">
+  <strong>Decisão de design:</strong> os índices 0–16 (queixo) e 48–67 (boca) são <em>excluídos</em>
+  do solvePnP inicial (<code>STABLE_IDX = range(17, 48)</code>).
+  Quando a boca abre, esses pontos deslocam-se para baixo; inclui-los faria o solver
+  interpretar esse deslocamento como rotação de pitch, movendo o cursor indevidamente.
+</div>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 3</span> Modelo 3D da Cabeça e Câmara</h2>
+<p class="file-ref">headtracker/tracking/pose_estimation.py</p>
+
+<div class="subgroup">
+<h3>Pontos 3D do modelo</h3>
+<p>
+  O ficheiro <code>assets/model.txt</code> (derivado do OpenFace) contém as coordenadas 3D de referência
+  dos 68 landmarks num espaço canónico (unidades em mm, origem no centro da face).
+  O eixo Z é invertido (<code>Z × −1</code>) para alinhar com a convenção do OpenCV (Z aponta para a câmara).
+</p>
+</div>
+
+<div class="subgroup">
+<h3>Matriz intrínseca da câmara K</h3>
+<p>Sem calibração física da câmara, usa-se uma aproximação pela distância focal:</p>
+<div class="formula">K = ⎡ f   0   c_x ⎤       f   = largura_imagem  (em píxeis)
+    ⎢ 0   f   c_y ⎥       c_x = largura / 2
+    ⎣ 0   0    1  ⎦       c_y = altura  / 2
+
+coeficientes de distorção ≈ 0  (assumidos nulos)</div>
+<p>
+  A distância focal igual à largura é uma heurística que assume um campo de visão de ≈ 60°,
+  razoável para a maioria das webcams.
+</p>
+</div>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 4</span> Estimação de Pose — solvePnP</h2>
+<p class="file-ref">headtracker/tracking/tracker.py · pose_estimation.py</p>
+
+<p>
+  O <strong>solvePnP</strong> resolve o problema PnP (<em>Perspective-n-Point</em>):
+  dado um conjunto de correspondências 2D↔3D e a matriz K, calcula a rotação e translação
+  da câmara em relação ao objeto (ou equivalentemente, da cabeça em relação à câmara).
+</p>
+
+<div class="formula">min  Σᵢ ‖ πK(R·Xᵢ + t) − xᵢ ‖²
+
+onde:
+  Xᵢ  = ponto 3D do modelo  (landmark i no espaço da cabeça)
+  xᵢ  = ponto 2D observado  (landmark i na imagem)
+  R   = matriz de rotação 3×3
+  t   = vetor de translação 3×1
+  πK  = projeção perspetiva com K</div>
+
+<div class="subgroup">
+<h3>Dois modos de uso</h3>
+<table>
+  <tr><th>Modo</th><th>Algoritmo</th><th>Quando é usado</th></tr>
+  <tr>
+    <td><strong>Inicialização</strong></td>
+    <td>EPNP</td>
+    <td>Primeiro frame ou após falha do rastreamento LK. Solução fechada, rápida e robusta sem estimativa inicial.</td>
+  </tr>
+  <tr>
+    <td><strong>Rastreamento</strong></td>
+    <td>ITERATIVE (Gauss-Newton)</td>
+    <td>A cada frame via LK. Parte da estimativa anterior como ponto inicial (<code>useExtrinsicGuess=True</code>), converge em 1-2 iterações.</td>
+  </tr>
+</table>
+</div>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 5</span> Rodrigues e Ângulos de Euler</h2>
+<p class="file-ref">main.py · pose_estimation.py</p>
+
+<p>
+  O solvePnP devolve um <strong>vetor de Rodrigues</strong> <code>r_vec ∈ ℝ³</code>, que codifica
+  eixo e ângulo de rotação num único vetor compacto.
+</p>
+
+<div class="formula">θ = ‖r_vec‖       (ângulo de rotação, em radianos)
+n = r_vec / θ    (eixo unitário de rotação)
+
+Matriz de rotação (fórmula de Rodrigues):
+R = I·cos(θ) + (1-cos(θ))·n·nᵀ + [n]ₓ·sin(θ)
+
+onde [n]ₓ é a matriz anti-simétrica associada a n.</div>
+
+<p>
+  A seguir aplica-se <code>cv2.RQDecomp3x3(R)</code>, que faz a decomposição RQ de R
+  e extrai os três ângulos de Euler:
+</p>
+
+<div class="formula">angles = cv2.RQDecomp3x3(R)
+pitch = angles[0]   (rotação em X — inclinação cima/baixo)
+yaw   = angles[1]   (rotação em Y — virar esquerda/direita)
+roll  = angles[2]   (rotação em Z — inclinar para o lado, ignorado)</div>
+
+<div class="note">
+  pitch e yaw são os únicos ângulos usados para controlo do cursor; roll é descartado.
+</div>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 6</span> Lucas-Kanade Optical Flow (via rápida)</h2>
+<p class="file-ref">headtracker/tracking/tracker.py — _track_lk()</p>
+
+<p>
+  Depois da inicialização, cada frame seguinte usa <strong>optical flow piramidal de Lucas-Kanade</strong>
+  para rastrear os 68 pontos projetados sem re-executar a CNN.
+  A pirâmide (4 níveis, janela 21×21) permite lidar com movimentos maiores.
+</p>
+
+<div class="subgroup">
+<h3>Validação Forward-Backward</h3>
+<p>
+  Correr LK só em frente (frame A → frame B) pode acumular erro.
+  Usa-se a validação FB: rastreia-se também B → A e calcula-se o erro de ida e volta.
+  Pontos com erro &gt; 2.0 px são descartados.
+</p>
+<div class="formula">Forward  : P_A  → LK →  P_B_fw       (A para B)
+Backward : P_B_fw → LK →  P_A_bw       (B de volta para A)
+
+Erro FB : ε_i = ‖P_A_i − P_A_bw_i‖
+
+Ponto aceite se : ε_i &lt; FB_THRESH = 2.0 px
+                  status_fw == 1  (LK convergiu)
+                  status_bw == 1</div>
+</div>
+
+<div class="subgroup">
+<h3>Critério de falha</h3>
+<p>
+  Após o filtro FB, se menos de <code>MIN_TRACKED = 20</code> pontos sobreviverem,
+  ou se o erro de reprojeção do solvePnP seguinte ultrapassar <code>REPROJ_THRESH = 8.0 px</code>,
+  o rastreamento é declarado falhado e o sistema retorna à CNN (ETAPA 2).
+</p>
+<div class="formula">reprojeção : proj_i = πK(R·X_i + t)
+erro médio : e = mean(‖proj_i − obs_i‖)   para os inliers
+
+se e ≥ 8.0 px → falha → reinicialização</div>
+</div>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 7</span> Filtragem de Ângulos — One Euro Filter</h2>
+<p class="file-ref">headtracker/control/filters.py</p>
+
+<p>
+  Os ângulos brutos têm ruído de alta frequência. Um filtro passa-baixo fixo introduziria lag;
+  o <strong>One Euro Filter</strong> adapta o corte dinamicamente: lento quando quieto (suaviza tremor),
+  rápido quando o movimento é amplo (preserva reatividade).
+</p>
+
+<div class="formula">dx      = (x - x_prev) / dt              (derivada estimada)
+|dx|_f  = low_pass(|dx|, f_cutoff_der)   (derivada suavizada)
+
+f_cutoff = min_cutoff + β × |dx|_f       (cutoff adaptativo)
+
+x_filtered = low_pass(x, f_cutoff)
+
+onde low_pass usa um filtro EWA de 1ª ordem:
+  α = 2πf_cutoff·dt / (1 + 2πf_cutoff·dt)
+  y = α·x + (1-α)·y_prev</div>
+
+<p>Parâmetros usados: <code>min_cutoff = 0.5 Hz</code>, <code>β = 0.3</code>.</p>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">ETAPA 8</span> Mapeamento de Ângulos para o Cursor</h2>
+<p class="file-ref">headtracker/control/cursor.py</p>
+
+<div class="subgroup">
+<h3>1. Subtração do neutro (calibração)</h3>
+<p>
+  No primeiro frame detetado, os ângulos atuais são guardados como posição neutra.
+  Em cada frame calcula-se o desvio em relação a esse neutro:
+</p>
+<div class="formula">Δyaw   = yaw   − neutral_yaw
+Δpitch = pitch − neutral_pitch</div>
+</div>
+
+<div class="subgroup">
+<h3>2. Soft deadzone</h3>
+<p>
+  Uma zona morta suave absorve microtremores: para valores muito próximos de zero,
+  a saída é atenuada quadraticamente (sem snap binário):
+</p>
+<div class="formula">se |v| ≤ inner_dz  → saída = 0
+se |v| ≥ outer_dz  → saída = v − sign(v)·inner_dz
+senão               → saída = sign(v) · (|v| − inner_dz)² / (outer_dz − inner_dz)</div>
+</div>
+
+<div class="subgroup">
+<h3>3. Normalização</h3>
+<div class="formula">norm_x = clip(Δyaw   / max_yaw_deg,   -1, 1)    (max_yaw_deg   = 22°)
+norm_y = clip(Δpitch / max_pitch_deg, -1, 1)    (max_pitch_deg = 13°)</div>
+</div>
+
+<div class="subgroup">
+<h3>4. Precision curve</h3>
+<p>
+  Curva linear por partes: a região central (|norm| ≤ knee) tem ganho mais alto
+  (navegação rápida); as bordas têm ganho mais baixo (precisão em alvos pequenos):
+</p>
+<div class="formula">se |norm| ≤ knee:
+    mapped = norm × (knee_out / knee)
+senão:
+    t = (|norm| − knee) / (1 − knee)
+    mapped = sign(norm) × (knee_out + t × (1 − knee_out))</div>
+</div>
+
+<div class="subgroup">
+<h3>5. Conversão para coordenadas de ecrã</h3>
+<div class="formula">target_x = clip(W/2 + mapped_x × W/2,  margin, W-1-margin)
+target_y = clip(H/2 − mapped_y × H/2,  margin, H-1-margin)</div>
+</div>
+
+<div class="subgroup">
+<h3>6. Suavização exponencial do movimento</h3>
+<p>
+  Um EWA final elimina saltos bruscos entre frames.
+  O alpha é proporcional à distância ao alvo — quanto mais longe, mais rápido se move:
+</p>
+<div class="formula">dist  = ‖target − curr‖
+alpha = clip(dist / 80.0,  0.30, 0.70)
+
+curr_x += (target_x − curr_x) × alpha
+curr_y += (target_y − curr_y) × alpha
+
+se dist &lt; 2.0 → snap direto (evitar vibração no centro)</div>
+</div>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section">
+<h2><span class="stage">EXTRA</span> Reconhecimento de Voz — Vosk</h2>
+<p class="file-ref">headtracker/voice/engine.py · commands.py</p>
+
+<p>
+  Os comandos de voz correm em paralelo numa <em>thread</em> de fundo.
+  O áudio é capturado pelo PyAudio (<code>CHUNK_SIZE = 800</code> amostras → ~50 ms de buffer)
+  e colocado numa fila. A <em>thread</em> de reconhecimento retira amostras da fila e
+  alimenta o <code>KaldiRecognizer</code> do Vosk.
+</p>
+<p>
+  O vocabulário é restrito às palavras que aparecem nos comandos definidos
+  (<code>SetGrammar</code>), reduzindo drasticamente a taxa de erro.
+  Os resultados parciais são processados <em>durante</em> a fala para minimizar latência.
+  Um <em>cooldown</em> de 1.2 s impede execuções repetidas acidentais.
+</p>
+</div>
+
+<!-- =========================================================== -->
+<hr class="divider">
+<div class="section" style="break-before: page; page-break-before: always;">
+<h2><span class="stage">RESUMO</span> Diagrama do Pipeline</h2>
+
+<div class="pipeline">
+
+  <!-- INPUT -->
+  <div class="pipe-step input">
+    <div class="pipe-step-header">ENTRADA</div>
+    <div class="pipe-step-body">
+      <strong>Frame da webcam</strong> &nbsp;·&nbsp; <em>640 × 480 px, BGR, ~30–60 fps</em>
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+  </div>
+
+  <!-- STEP 1 -->
+  <div class="pipe-step">
+    <div class="pipe-step-header">ETAPA 1 — DETEÇÃO DE FACE</div>
+    <div class="pipe-step-body">
+      <strong>SCRFD ONNX</strong> &nbsp;·&nbsp; Feature Pyramid Network (strides 8 / 16 / 32)<br>
+      <em>âncoras → score de confiança (&gt; 0.7) → NMS (IoU 0.4) → bounding box</em>
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+  </div>
+
+  <!-- STEP 2 -->
+  <div class="pipe-step">
+    <div class="pipe-step-header">ETAPA 2 — LANDMARKS FACIAIS</div>
+    <div class="pipe-step-body">
+      <strong>CNN 68 pontos ONNX</strong> &nbsp;·&nbsp; recorte redimensionado para 128 × 128 px<br>
+      <em>dense_1 → 136 floats normalizados → 68 pontos 2D em coordenadas da imagem</em>
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+  </div>
+
+  <!-- STEP 3 -->
+  <div class="pipe-step">
+    <div class="pipe-step-header">ETAPA 3 — MODELO 3D + CÂMARA</div>
+    <div class="pipe-step-body">
+      <strong>68 pontos 3D</strong> do modelo OpenFace (assets/model.txt, em mm)<br>
+      <em>Matriz K: f = largura, cc = (W/2, H/2) &nbsp;·&nbsp; distorção ≈ 0</em>
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+  </div>
+
+  <!-- BRANCHING -->
+  <div class="pipe-branch-labels">
+    <span>⟵ &nbsp; FALLBACK (1.º frame ou falha LK)</span>
+    <span>(frames seguintes) &nbsp; VIA RÁPIDA ⟶</span>
+  </div>
+  <div class="pipe-branch-row">
+    <div class="pipe-step">
+      <div class="pipe-step-header">ETAPA 4A — solvePnP EPNP</div>
+      <div class="pipe-step-body">
+        <strong>31 landmarks estáveis</strong> (sobrancelhas + nariz + olhos)<br>
+        <em>solução fechada, sem estimativa inicial</em>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-step-header">ETAPA 6 → 4B — LK + solvePnP</div>
+      <div class="pipe-step-body">
+        <strong>Lucas-Kanade</strong> forward + backward (FB err &lt; 2 px)<br>
+        <em>≥ 20 inliers → solvePnP ITERATIVE (reproj &lt; 8 px)</em>
+      </div>
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+    <div class="arr-label">r_vec, t_vec</div>
+  </div>
+
+  <!-- STEP 5 -->
+  <div class="pipe-step">
+    <div class="pipe-step-header">ETAPA 5 — RODRIGUES → ÂNGULOS DE EULER</div>
+    <div class="pipe-step-body">
+      <strong>cv2.Rodrigues</strong>: r_vec → R (3×3) &nbsp;·&nbsp;
+      <strong>cv2.RQDecomp3x3</strong>: R → pitch, yaw, roll<br>
+      <em>pitch = inclinação vertical &nbsp;·&nbsp; yaw = rotação horizontal &nbsp;·&nbsp; roll ignorado</em>
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+  </div>
+
+  <!-- STEP 7 -->
+  <div class="pipe-step">
+    <div class="pipe-step-header">ETAPA 7 — ONE EURO FILTER</div>
+    <div class="pipe-step-body">
+      <strong>Filtro passa-baixo adaptativo</strong>: cutoff sobe com a velocidade do movimento<br>
+      <em>min_cutoff = 0.5 Hz &nbsp;·&nbsp; β = 0.3 &nbsp;·&nbsp; elimina tremor sem introduzir lag</em>
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+  </div>
+
+  <!-- STEP 8 -->
+  <div class="pipe-step">
+    <div class="pipe-step-header">ETAPA 8 — CURSOR CONTROLLER</div>
+    <div class="pipe-step-body">
+      <strong>Subtração do neutro</strong> → soft deadzone → normalização (±22° / ±13°)<br>
+      <strong>Precision curve</strong> (centro rápido, bordas lentas) → suavização EWA (α 0.30–0.70)
+    </div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="arr-line"></div>
+    <div class="arr-head">▼</div>
+  </div>
+
+  <!-- OUTPUT -->
+  <div class="pipe-step output">
+    <div class="pipe-step-header">SAÍDA</div>
+    <div class="pipe-step-body">
+      <strong>pyautogui.moveTo(x, y)</strong> &nbsp;·&nbsp; <em>coordenada de ecrã em píxeis</em>
+    </div>
+  </div>
+
+</div><!-- /pipeline -->
+</div><!-- /section -->
+
+<p style="margin-top: 36px; font-size: 11px; color: #9ca3af; text-align: center;">
+  HeadTracker &nbsp;·&nbsp; João Pedro Matos Pimenta &nbsp;·&nbsp; 2026 &nbsp;·&nbsp;
+  <code>github.com/Pimenta15/HeadTracker</code>
+</p>
+
+</body>
+</html>
