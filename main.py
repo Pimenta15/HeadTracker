@@ -1,4 +1,4 @@
-"q""HeadTracker — entry point."""
+"""HeadTracker — entry point."""
 from argparse import ArgumentParser
 from pathlib import Path
 import queue
@@ -17,11 +17,9 @@ from headtracker.control.filters import OneEuroFilter
 from headtracker.control.cursor import CursorController
 from headtracker.voice.engine import VoiceCommandEngine
 from headtracker.voice.commands import COMANDOS
-from headtracker import calibration
 
 ASSETS_DIR = Path(__file__).parent / "assets"
-CALIB_FILE = "calibration.json"
-MAX_ANGLE_DELTA = 2.5
+MAX_ANGLE_DELTA = 3.0
 WINDOW_TITLE = "Head Tracker - HCI Controller"
 
 
@@ -86,17 +84,9 @@ def run(args):
     screen_w, screen_h = pyautogui.size()
     cursor = CursorController(screen_w, screen_h)
 
-    # --- Load calibration ---
-    saved = calibration.load(CALIB_FILE)
-    if saved:
-        cursor.calibrate(saved.get("neutral_pitch", 0.0), saved.get("neutral_yaw", 0.0))
-        cursor.max_yaw_deg = saved.get("max_yaw_deg", cursor.max_yaw_deg)
-        cursor.max_pitch_deg = saved.get("max_pitch_deg", cursor.max_pitch_deg)
-        print(f"Calibração carregada: yaw±{cursor.max_yaw_deg:.1f}° pitch±{cursor.max_pitch_deg:.1f}°")
-
     # --- Angle filters and state ---
-    filt_pitch = OneEuroFilter(min_cutoff=0.08, beta=0.15)
-    filt_yaw = OneEuroFilter(min_cutoff=0.08, beta=0.15)
+    filt_pitch = OneEuroFilter(min_cutoff=0.5, beta=0.3)
+    filt_yaw   = OneEuroFilter(min_cutoff=0.5, beta=0.3)
     prev_raw_pitch = None
     prev_raw_yaw = None
     have_sample = False
@@ -152,12 +142,6 @@ def run(args):
 
             delta_pitch, delta_yaw = cursor.update(raw_pitch, raw_yaw)
 
-            pose_estimator.visualize(frame, (tracker.r_vec, tracker.t_vec), color=(0, 255, 0))
-            if tracker.track_pts_2d is not None:
-                for pt in tracker.track_pts_2d.reshape(-1, 2).astype(int):
-                    if 0 <= pt[0] < frame_w and 0 <= pt[1] < frame_h:
-                        cv2.circle(frame, tuple(pt), 2, (0, 220, 255), -1)
-
         tm.stop()
 
         # --- Ações vindas da fila de voz ---
@@ -174,6 +158,12 @@ def run(args):
 
         # --- Janela (apenas com --show) ---
         if args.show:
+            if tracker.is_active:
+                pose_estimator.visualize(frame, (tracker.r_vec, tracker.t_vec), color=(0, 255, 0))
+                if tracker.track_pts_2d is not None:
+                    for pt in tracker.track_pts_2d.reshape(-1, 2).astype(int):
+                        if 0 <= pt[0] < frame_w and 0 <= pt[1] < frame_h:
+                            cv2.circle(frame, tuple(pt), 2, (0, 220, 255), -1)
             _draw_hud(frame, tracker, raw_pitch, raw_yaw, delta_pitch, delta_yaw, tm.getFPS())
             cv2.imshow(WINDOW_TITLE, frame)
             key = cv2.waitKey(1) & 0xFF

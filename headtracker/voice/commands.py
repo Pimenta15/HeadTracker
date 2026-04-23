@@ -116,7 +116,7 @@ def abrir_terminal():
 
 
 def encerrar_programa():
-    print("\n[!] Comando 'encerrar' detectado. Encerrando programa...")
+    print("\n[!] Encerrando programa...")
     os._exit(0)
 
 
@@ -134,7 +134,7 @@ COMANDOS = {
     "rolar baixo":       rolar_baixo,
     "minimizar":         minimizar,
     "abrir terminal":    abrir_terminal,
-    "encerrar programa": encerrar_programa,
+    "encerrar":          encerrar_programa,
     "show":              clique_mouse,
     "sou":               clique_mouse,
     "aumenta":           aumentar_zoom,

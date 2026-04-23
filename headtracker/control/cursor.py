@@ -22,8 +22,8 @@ class CursorController:
         self,
         screen_w,
         screen_h,
-        max_yaw_deg=14.0,
-        max_pitch_deg=8.0,
+        max_yaw_deg=22.0,
+        max_pitch_deg=13.0,
         curve_knee=0.65,
         curve_knee_out=0.65,
         deadzone_inner_yaw=0.0,
@@ -81,7 +81,7 @@ class CursorController:
         target_y = float(np.clip(sh / 2 - mapped_y * (sh / 2), m, sh - 1 - m))
 
         dist = np.hypot(target_x - self._curr_x, target_y - self._curr_y)
-        alpha = float(np.clip(dist / 100.0, 0.20, 0.55))
+        alpha = float(np.clip(dist / 80.0, 0.30, 0.70))
         self._curr_x += (target_x - self._curr_x) * alpha
         self._curr_y += (target_y - self._curr_y) * alpha
         if dist < 2.0:
