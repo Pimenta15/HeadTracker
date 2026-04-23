@@ -20,6 +20,9 @@ class HeadTracker:
         maxLevel=3,
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.01),
     )
+    # Jaw (0-16) e boca (48-67) movem com a fala — excluídos do PnP de reinit
+    # para evitar que abrir a boca mude o pitch estimado.
+    STABLE_IDX = list(range(17, 48))  # sobrancelhas + nariz + olhos
 
     def __init__(self, face_detector, mark_detector, pose_estimator):
         self.face_detector = face_detector
@@ -149,9 +152,10 @@ class HeadTracker:
         marks[:, 0] += rx1
         marks[:, 1] += ry1
 
+        s = self.STABLE_IDX
         ok, r_init, t_init = cv2.solvePnP(
-            self.pose_estimator.model_points_68.astype(np.float64),
-            marks.astype(np.float64),
+            self.pose_estimator.model_points_68[s].astype(np.float64),
+            marks[s].astype(np.float64),
             self.pose_estimator.camera_matrix,
             self.pose_estimator.dist_coeefs,
             flags=cv2.SOLVEPNP_EPNP)

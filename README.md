@@ -70,7 +70,7 @@ Say any of the phrases below. Commands have a 1.2 s cooldown to avoid accidental
 | `aumenta` / `diminui` | Zoom in / out |
 | `troca` | Win+Tab (window switcher) |
 | `zero` | Reset completo: reinicia rastreamento e recalibra centro |
-| `encerrar programa` | Exit HeadTracker |
+| `encerrar` | Encerrar HeadTracker |
 
 ## Project structure
 

@@ -9,7 +9,7 @@ import pyaudio
 from vosk import Model, KaldiRecognizer
 
 SAMPLE_RATE = 16000
-CHUNK_SIZE = 2000
+CHUNK_SIZE = 800
 
 
 class VoiceCommandEngine:
